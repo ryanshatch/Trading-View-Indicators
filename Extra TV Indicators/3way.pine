@@ -1,0 +1,81 @@
+// © No_Cliff_Hanger
+//@version=5
+
+study(title="Triple MA&EMA + Ichimoku + Scalper's Channel", shorttitle="_", overlay=true)
+//MA+EMA
+
+sma0_len = input(20, minval=1, title="SMA 20")
+sma0_src = input(close, title="Source")
+
+smaA_len = input(50, minval=1, title="SMA 50")
+smaA_src = input(close, title="Source")
+
+smaB_len = input(100, minval=1, title="SMA 100")
+smaB_src = input(close, title="Source")
+
+smaC_len = input(200, minval=1, title="SMA 200")
+smaC_src = input(close, title="Source")
+
+emaA_len = input(50, minval=1, title="EMA 50")
+emaA_src = input(close, title="Source")
+
+emaB_len = input(100, minval=1, title="EMA 100")
+emaB_src = input(close, title="Source")
+
+emaC_len = input(200, minval=1, title="EMA 200")
+emaC_src = input(close, title="Source")
+
+
+sma0 = sma(sma0_src, sma0_len)
+smaA = sma(smaA_src, smaA_len)
+smaB = sma(smaB_src, smaB_len)
+smaC = sma(smaC_src, smaC_len)
+
+emaA = ema(emaA_src, emaA_len)
+emaB = ema(emaB_src, emaB_len)
+emaC = ema(emaC_src, emaC_len)
+
+
+plot(sma0, color=#FF0000, title="MA 20")
+plot(smaA, color=#FF0000, title="MA 50")
+plot(smaB, color=#FF0000, title="MA 100")
+plot(smaC, color=#FF0000, title="MA 200")
+
+plot(emaA, color=#3EA0E0, title="EMA 50")
+plot(emaB, color=#3EA0E0, title="EMA 100")
+plot(emaC, color=#3EA0E0, title="EMA 200")
+
+
+//ICHIMOKU
+
+conversionPeriods = input(9, minval=1, title="Conversion Line Periods"),
+basePeriods = input(26, minval=1, title="Base Line Periods")
+laggingSpan2Periods = input(52, minval=1, title="Lagging Span 2 Periods"),
+displacement = input(26, minval=1, title="Displacement")
+
+donchian(len) => avg(lowest(len), highest(len))
+
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpan2Periods)
+
+plot(conversionLine, color=#0496ff, title="Conversion Line")
+plot(baseLine, color=#991515, title="Base Line")
+plot(close, offset = -displacement, color=#459915, title="Lagging Span")
+
+p1 = plot(leadLine1, offset = displacement, color=color.green,
+ title="Lead 1")
+p2 = plot(leadLine2, offset = displacement, color=color.red, 
+ title="Lead 2")
+fill(p1, p2, color = leadLine1 > leadLine2 ? color.green : color.red)
+
+//SCALPER'S CHANNEL
+
+scalpers_length = input(20)
+scalpers_factor = input(15)
+pi = atan(1)*4
+Average(x,y) => (sum(x,y) / y)
+scalper_line= plot(Average(close, scalpers_factor) - log(pi * (atr(scalpers_factor))), color=color.blue, linewidth=3)
+hi = plot (highest(scalpers_length), color=color.fuchsia)
+lo = plot (lowest(scalpers_length), color=color.fuchsia)
