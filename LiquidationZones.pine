@@ -1,0 +1,166 @@
+indicator(title='Liquidation Zones', shorttitle='Liquidation Zones', overlay=true , max_boxes_count=500, max_lines_count=500)
+import No_Cliff_Hanger/LiquidationZone/1 as LILI
+
+float f_leverage_1      =   input.float(50, "Leverage 1", minval=0, maxval=100 ,step = 1, group='Leverage 1')
+color col_lev_1         =   input(color.rgb(231, 65, 65, 20), group='Leverage 1')
+int thinkness_1         =   input.int(1,"Thickness of lines 1", minval = -1, group='Leverage 1')
+float f_leverage_2      =   input.float(25, "Leverage 2", minval=0, maxval=100 ,step = 1, group='Leverage 2')
+color col_lev_2         =   input(color.rgb(225, 236, 72, 50), group='Leverage 2')
+int thinkness_2         =   input.int(1,"Thickness of lines 2", minval = -1, group='Leverage 2')
+
+bool priceorliq         =   input.bool(false, "Position or Liq", group='leverage')
+float maintainance      =   input.float(50, "Exchange margin maintainance %", minval=0, maxval=100 ,group='common',step = 1)
+
+bool killonlowhigh      =   input.bool(true, "Kill on LOW/HIGH", tooltip = "how is a relevant liquidation handled, by high/low or by the close value")
+int maximumlines        =   math.floor(input.int(500,"Maximum amount of lines")/4)
+int minimumlength       =   input.int(10,"Minimum Length of liquidated lines", minval = -1, tooltip = "set this parameter to disable the small line cleanup, as longer the minimum length as more historic lines will remain")
+
+float factor            =   input.float(1.03,"minimum shrink/raise of the close for new line draw",step = 0.01, minval = 1.0, group='Indicator settings')
+
+string indicator_sel    =   input.string("Bollinger",options = ["Bollinger","MACD","EMACROSS","SMACROSS"], group='Indicator settings')
+
+string mtf_lvl          =   input.timeframe("",   title="Custom TF",group='Indicator settings')
+int length1             =   input.int(20, title="Ma-Length_1",minval = 1)
+int length2             =   input.int(40, title="Ma-Length_2",minval = 1)
+int length3             =   input.int(10, title="Sig-Length_2",minval = 1)
+bool Show_L1            =   input.bool(false, "Show L1 Bollingers",group='Indicator settings')
+bool Show_L2            =   input.bool(true, "Show L2 Bollingers",group='Indicator settings')
+bool Show_L3            =   input.bool(true, "Show L3 Bollingers",group='Indicator settings')
+
+var bool LOCK = false
+var float lastprice = na
+
+var float timeperbar = 0.0000001
+//  run the timeperbar only as long till relevant data is aviable ( 100 bars to get the value, incl. 100 bars reserve)
+if bar_index < 200 
+    timeperbar := LILI.f_getbartime()
+
+//  init {
+var LILI.LiquidationZone[] Liqui_Line_L_1    = array.new <LILI.LiquidationZone>()
+var LILI.LiquidationZone[] Liqui_Line_S_1    = array.new <LILI.LiquidationZone>()
+var LILI.LiquidationZone[] Liqui_Line_L_2    = array.new <LILI.LiquidationZone>()
+var LILI.LiquidationZone[] Liqui_Line_S_2    = array.new <LILI.LiquidationZone>()
+
+set_l_1 = LILI.LiquidationZone.new(
+ creationtime=          time, 
+ stoptime =             time,
+ price=                 close, 
+ leverage=              f_leverage_1,
+ maintainance=          maintainance,
+ line_active=           true,
+ line_color=            col_lev_1, 
+ line_thickness=        thinkness_1,
+ line_style=            line.style_solid,
+ line_direction=        "long",
+ line_finished=         false,
+ text_active=           true,
+ text_size=             size.normal,
+ text_color=            color.white
+ )
+
+set_s_1 = LILI.LiquidationZone.new(
+ creationtime=          time, 
+ stoptime =             time,
+ price=                 close, 
+ leverage=              f_leverage_1,
+ maintainance=          maintainance,
+ line_active=           true,
+ line_color=            col_lev_1, 
+ line_thickness=        thinkness_1,
+ line_style=            line.style_solid,
+ line_direction=        "short",
+ line_finished=         false,
+ text_active=           true,
+ text_size=             size.normal,
+ text_color=            color.white
+ )
+
+
+set_l_2 = LILI.LiquidationZone.new(
+ creationtime=          time, 
+ stoptime =             time,
+ price=                 close, 
+ leverage=              f_leverage_2,
+ maintainance=          maintainance,
+ line_active=           true,
+ line_color=            col_lev_2, 
+ line_thickness=        thinkness_2,
+ line_style=            line.style_solid,
+ line_direction=        "long",
+ line_finished=         false,
+ text_active=           true,
+ text_size=             size.normal,
+ text_color=            color.white
+ )
+
+set_s_2 = LILI.LiquidationZone.new(
+ creationtime=          time, 
+ stoptime =             time,
+ price=                 close, 
+ leverage=              f_leverage_2,
+ maintainance=          maintainance,
+ line_active=           true,
+ line_color=            col_lev_2, 
+ line_thickness=        thinkness_2,
+ line_style=            line.style_solid,
+ line_direction=        "short",
+ line_finished=         false,
+ text_active=           true,
+ text_size=             size.normal,
+ text_color=            color.white
+ )
+
+//  }
+
+//  input.string("Bollinger",options = ["Bollinger","MACD","EMACROSS"], group='Indicator settings')
+
+get_boll(simple int _length1, simple float _multiplier, simple string _timeframe) =>
+    request.security(syminfo.tickerid,_timeframe,ta.bb(close,_length1,_multiplier), barmerge.gaps_off, barmerge.lookahead_off)
+
+get_macd(simple int _length1, simple int _length2, simple int _length3, simple string _timeframe)  =>
+    request.security(syminfo.tickerid,_timeframe,ta.macd(close,_length1,_length2, _length3), barmerge.gaps_off, barmerge.lookahead_off)
+
+get_emacross(simple int _length1, simple int _length2, simple string _timeframe)  =>
+    request.security(syminfo.tickerid,_timeframe,ta.cross(ta.ema(close,_length1),ta.ema(close,_length2)), barmerge.gaps_off, barmerge.lookahead_off)
+
+get_smacross(simple int _length1, simple int _length2, simple string _timeframe)  =>
+    request.security(syminfo.tickerid,_timeframe,ta.cross(ta.sma(close,_length1),ta.sma(close,_length2)), barmerge.gaps_off, barmerge.lookahead_off)
+
+[a1,b1,c1] = get_boll(_length1 = length1, _multiplier = 1, _timeframe = mtf_lvl)
+[a2,b2,c2] = get_boll(_length1 = length1, _multiplier = 2, _timeframe = mtf_lvl)
+[a3,b3,c3] = get_boll(_length1 = length1, _multiplier = 3, _timeframe = mtf_lvl)
+
+[a4,b4,c4] = get_macd(_length1 = length1, _length2 = length2, _length3 = length3, _timeframe = mtf_lvl)
+
+a5 = get_emacross(_length1 = length1, _length2 = length2, _timeframe = mtf_lvl)
+
+a6 = get_smacross(_length1 = length1, _length2 = length2, _timeframe = mtf_lvl)
+
+alert_1 = switch indicator_sel
+    "Bollinger" => ((Show_L1? ta.crossunder(close,c1) or ta.crossover(close,a1) :false) or
+     (Show_L2? ta.crossunder(close,c2) or ta.crossover(close,a2) :false) or
+     (Show_L3? ta.crossunder(close,c3) or ta.crossover(close,a3) :false))
+    "MACD" => ta.cross(a4, b4)
+    "EMACROSS" => a5
+    "SMACROSS" => a6
+
+if close > lastprice * factor or close < lastprice / factor
+    LOCK := false
+
+if alert_1 and 
+ LOCK == false
+    LOCK := true
+    lastprice := close
+    LILI.f_liqline_add(_Liqui_Line = Liqui_Line_L_1, linetoadd = set_l_1,_limit = maximumlines)
+    LILI.f_liqline_add(_Liqui_Line = Liqui_Line_S_1, linetoadd = set_s_1,_limit = maximumlines)
+    LILI.f_liqline_add(_Liqui_Line = Liqui_Line_L_2, linetoadd = set_l_2,_limit = maximumlines)
+    LILI.f_liqline_add(_Liqui_Line = Liqui_Line_S_2, linetoadd = set_s_2,_limit = maximumlines)
+
+LILI.f_liqline_draw(_Liqui_Line = Liqui_Line_L_1, _priceorliq = priceorliq)
+LILI.f_liqline_draw(_Liqui_Line = Liqui_Line_S_1, _priceorliq = priceorliq)
+LILI.f_liqline_draw(_Liqui_Line = Liqui_Line_L_2, _priceorliq = priceorliq)
+LILI.f_liqline_draw(_Liqui_Line = Liqui_Line_S_2, _priceorliq = priceorliq)
+LILI.f_liqline_update(_Liqui_Line = Liqui_Line_L_1, _killonlowhigh = killonlowhigh, _minlength = minimumlength, _timeperbar = timeperbar)
+LILI.f_liqline_update(_Liqui_Line = Liqui_Line_S_1, _killonlowhigh = killonlowhigh, _minlength = minimumlength, _timeperbar = timeperbar)
+LILI.f_liqline_update(_Liqui_Line = Liqui_Line_L_2, _killonlowhigh = killonlowhigh, _minlength = minimumlength, _timeperbar = timeperbar)
+LILI.f_liqline_update(_Liqui_Line = Liqui_Line_S_2, _killonlowhigh = killonlowhigh, _minlength = minimumlength, _timeperbar = timeperbar)
