@@ -1,0 +1,291 @@
+//@version=6
+indicator(" Machine Learning RSI - imaclone.x",shorttitle = "RSI.ai-02", overlay=false, precision=0)
+// (* Developed by imaclone.x.
+// Last Updated: August 17th 2025
+// version: 6-02
+
+// // <><><><><><<><<><><><><><><><><><><><><><><><><><><<><<><><><><><><><><><><><><>
+
+//  A single indicator that fuses my ML-RSI.ai pipeline with a classic multi-timeframe RSI. One script, dual-resolution oscillators if desired, plus a machine-learning similarity engine and modular signal-processing layers.
+
+// What it does
+// * Primary RSI augmented with KNN similarity engine (K, lookback, weighting). Feature embeddings include RSI magnitude, RSI momentum, volatility surface, regression slope, and price momentum vectors.
+// * Adaptive smoothing stack: Kalman filter recursion, Double EMA cascades, or ALMA convolution.
+// * Multi-resolution control for the primary oscillator timeframe.
+// * Optional *second* RSI projected from any timeframe for hierarchical confluence.
+// * Advanced visuals: upper/lower thresholds, midline, background regime highlighting, crossovers, and B/S event labels.
+// * Color architectures: None, Trend-Following (50-line bifurcation), or Impulse (band-breach). Optional bar tinting for full-chart context.
+
+// Inputs (groups)
+// * Timeframe Settings: primary + secondary RSI TF/lengths.
+// * Levels & Visuals: thresholds, highlights, cross events, B/S markers.
+// * RSI Base: smoothing toggle, MA class, ALMA sigma.
+// * KNN Machine Learning: enable, K neighbors, historical window, feature dimensionality, ML weighting.
+// * Advanced Filtering: method + intensity.
+// * Coloring: None, Trend-Following, Impulse.
+
+// Signals
+// * B flag when ML-RSI crosses upward through the lower threshold.
+// * S flag when ML-RSI crosses downward through the upper threshold.
+// * Secondary RSI = higher-timeframe confirmation, not standalone trigger.
+
+// Usage notes
+// * Raise ML weight + feature dimensionality for deeper similarity recognition; lower them for classic oscillator behavior.
+// * Kalman recursion delivers adaptive, low-lag smoothing; Double EMA and ALMA yield stronger dampening.
+// * Typical config: intraday primary RSI + higher-TF secondary RSI for regime anchoring.
+
+// Changelog
+// * v6 merge: Unified CM-style MTF RSI framework with my KNN-enhanced kernel and filter stack. One composite indicator replaces multiple scripts.
+
+// Credits
+// * MTF band logic inspired by earlier open-source frameworks.
+// * ML kernel and implementation by imaclone.x.
+
+// Disclaimer
+// For research and algorithmic experimentation only. No signals guaranteed.
+// And please kindly, for the love of God, DYOFR. *)
+// <><><><><><<><<><><><><><><><><><><><><><><><><><><<><<><><><><><><><><><><><><>
+
+// =========================
+// ===== INPUTS (MTF)
+// =========================
+group_tf = "Timeframe Settings"
+useCurrentRes   = input.bool(true,  "Use chart timeframe", group=group_tf)
+resCustom       = input.timeframe("60", "Primary RSI timeframe", group=group_tf)
+rsiLen          = input.int(14, "Primary RSI length", minval=1, group=group_tf)
+
+showSecondRsi   = input.bool(false, "Show 2nd RSI", group=group_tf)
+useCurrentRes2  = input.bool(false, "2nd RSI: use chart timeframe", group=group_tf)
+resCustom2      = input.timeframe("D", "2nd RSI timeframe", group=group_tf)
+rsiLen2         = input.int(14, "2nd RSI length", minval=1, group=group_tf)
+
+// =========================
+// ===== INPUTS (Levels & Visuals from CM)
+// =========================
+group_levels = "Levels & Visuals"
+upLine   = input.int(70, "Upper line", minval=50, maxval=90, group=group_levels)
+lowLine  = input.int(30, "Lower line", minval=10, maxval=50, group=group_levels)
+showMid  = input.bool(true,  "Show mid line (50)", group=group_levels)
+showBGHL = input.bool(true,  "BG highlight above/below bands", group=group_levels)
+showCrossHL = input.bool(true, "BG highlight on band crosses", group=group_levels)
+showBSLabels = input.bool(true, "Show B/S labels on band crosses", group=group_levels)
+
+// =========================
+// ===== INPUTS (RSI & ML from ML-RSI)
+// =========================
+group_rsi = "RSI Base"
+rsiSmoothing = input.bool(true, "Apply MA to RSI", group=group_rsi)
+maLen        = input.int(3, "MA length", minval=1, group=group_rsi)
+maType       = input.string("ALMA", "MA type", options=["SMA","EMA","DEMA","TEMA","WMA","VWMA","SMMA","HMA","LSMA","ALMA"], group=group_rsi)
+almaSigma    = input.int(4, "ALMA sigma", minval=1, group=group_rsi)
+
+group_knn = "KNN Machine Learning"
+useKnn        = input.bool(true,  "Enable KNN on primary RSI", group=group_knn)
+knnNeighbors  = input.int(5,     "K neighbors", minval=1, maxval=50, group=group_knn)
+knnLookback   = input.int(100,   "Lookback bars", minval=20, maxval=500, group=group_knn)
+knnWeight     = input.float(0.4, "ML weight vs RSI", minval=0.0, maxval=1.0, step=0.1, group=group_knn)
+featureCount  = input.int(3,     "# features (1-5)", minval=1, maxval=5, group=group_knn)
+
+group_filter = "Advanced Filtering"
+useFilter     = input.bool(true,  "Apply extra smoothing", group=group_filter)
+filterMethod  = input.string("Kalman", "Filter", options=["None","Kalman","DoubleEMA","ALMA"], group=group_filter)
+filterStrength= input.float(0.3,  "Filter strength", minval=0.01, maxval=1.0, step=0.01, group=group_filter)
+
+group_color = "Coloring"
+colorMode = input.string("Trend", "Color mode", options=["None","Trend","Impulse"], group=group_color)
+
+// =========================
+// ===== HELPERS
+// =========================
+calcMA(_type, _src, _len, _sigma) =>
+    float r = na
+    if _type == "SMA"
+        r := ta.sma(_src, _len)
+    else if _type == "EMA"
+        r := ta.ema(_src, _len)
+    else if _type == "DEMA"
+        e1 = ta.ema(_src, _len)
+        e2 = ta.ema(e1, _len)
+        r := 2*e1 - e2
+    else if _type == "TEMA"
+        e1 = ta.ema(_src, _len)
+        e2 = ta.ema(e1, _len)
+        e3 = ta.ema(e2, _len)
+        r := 3*(e1 - e2) + e3
+    else if _type == "WMA"
+        // manual WMA
+        norm = 0.0, sum = 0.0
+        for i = 0 to _len - 1
+            w = (_len - i)
+            norm += w
+            sum  += _src[i]*w
+        r := sum / norm
+    else if _type == "VWMA"
+        r := ta.vwma(_src, _len)
+    else if _type == "SMMA"
+        r := ta.rma(_src, _len)
+    else if _type == "HMA"
+        r := ta.hma(_src, _len)
+    else if _type == "LSMA"
+        r := ta.linreg(_src, _len, 0)
+    else if _type == "ALMA"
+        r := ta.alma(_src, _len, 0.85, _sigma)
+    r
+
+normalizeSeries(s, l) =>
+    hi = ta.highest(s, l)
+    lo = ta.lowest(s, l)
+    rng = hi - lo
+    rng != 0 ? (s - lo) / rng : 0.5
+
+// Euclidean distance between current and i-bars-ago points across up to 5 normalized feature series
+_euclidAt(i, n1, n2, n3, n4, n5, fCount) =>
+    float sum = 0.0
+    sum += math.pow(n1 - n1[i], 2)
+    if fCount >= 2
+        sum += math.pow(n2 - n2[i], 2)
+    if fCount >= 3
+        sum += math.pow(n3 - n3[i], 2)
+    if fCount >= 4
+        sum += math.pow(n4 - n4[i], 2)
+    if fCount >= 5
+        sum += math.pow(n5 - n5[i], 2)
+    math.sqrt(sum)
+
+// =========================
+// ===== SERIES (MTF primary)
+// =========================
+res  = useCurrentRes ? timeframe.period : resCustom
+srcClose = request.security(syminfo.tickerid, res, close)
+baseRsi  = request.security(syminfo.tickerid, res, ta.rsi(close, rsiLen))
+stdRsi   = rsiSmoothing ? calcMA(maType, baseRsi, maLen, almaSigma) : baseRsi
+
+// ===== FEATURES for KNN on primary RSI
+momRsi  = stdRsi - stdRsi[3]
+volRsi  = ta.stdev(stdRsi, 10)
+slopeRsi= ta.linreg(stdRsi, 5, 0) - ta.linreg(stdRsi, 5, 1)
+pxMom   = srcClose - srcClose[5]
+
+nRSI = normalizeSeries(stdRsi, knnLookback)
+nMOM = normalizeSeries(momRsi, knnLookback)
+nVOL = normalizeSeries(volRsi, knnLookback)
+nSLP = normalizeSeries(slopeRsi, knnLookback)
+nPMO = normalizeSeries(pxMom,  knnLookback)
+
+// =========================
+// ===== KNN on primary RSI
+// =========================
+var distances = array.new_float()
+var indices   = array.new_int()
+
+float knnRsi = stdRsi
+float knnDiv = 0.0
+int   kEff   = 0
+
+if useKnn
+    array.clear(distances)
+    array.clear(indices)
+
+    // collect distances
+    for i = 1 to knnLookback
+        if i < bar_index
+            d = _euclidAt(i, nRSI, nMOM, nVOL, nSLP, nPMO, featureCount)
+            array.push(distances, d)
+            array.push(indices,   i)
+
+    // sort by distance
+    if array.size(distances) >= 2
+        for a = 0 to array.size(distances) - 2
+            for b = 0 to array.size(distances) - 2 - a
+                if array.get(distances, b) > array.get(distances, b+1)
+                    // swap distances
+                    tD = array.get(distances, b)
+                    array.set(distances, b, array.get(distances, b+1))
+                    array.set(distances, b+1, tD)
+                    // swap indices
+                    tI = array.get(indices, b)
+                    array.set(indices, b, array.get(indices, b+1))
+                    array.set(indices, b+1, tI)
+
+    // weighted blend of neighbor RSI values
+    float wSum = 0.0
+    float vSum = 0.0
+    kEff := math.min(knnNeighbors, array.size(distances))
+    if kEff > 0
+        float dDiffSum = 0.0
+        int   dCount   = 0
+        for j = 0 to kEff - 1
+            idx = array.get(indices, j)
+            dist = array.get(distances, j)
+            w = dist < 1e-6 ? 1.0 : 1.0/dist
+            neigh = stdRsi[idx]
+            vSum += neigh * w
+            wSum += w
+            dDiffSum += math.abs(stdRsi - stdRsi[idx])
+            dCount += 1
+        knnDiv := dCount > 0 ? dDiffSum / dCount : 0.0
+    if wSum > 0
+        knnEst = vSum / wSum
+        knnRsi := (1.0 - knnWeight) * stdRsi + knnWeight * knnEst
+        knnRsi := math.max(0.0, math.min(100.0, knnRsi))
+
+// =========================
+// ===== Optional extra filtering
+// =========================
+mlRsi = useKnn ? knnRsi : stdRsi
+filtered = switch filterMethod
+    "None" => mlRsi
+    "Kalman" =>
+        var float kf = na
+        kf := na(kf) ? mlRsi : kf + filterStrength * (mlRsi - kf)
+        kf
+    "DoubleEMA" =>
+        e1 = ta.ema(mlRsi, math.round(filterStrength*10))
+        e2 = ta.ema(e1,     math.round(filterStrength*5))
+        e2
+    "ALMA" => ta.alma(mlRsi, math.round(filterStrength*20), 0, 6)
+    => mlRsi
+finalRsi = useFilter ? filtered : mlRsi
+
+// =========================
+// ===== 2nd RSI (MTF optional)
+// =========================
+res2 = useCurrentRes2 ? timeframe.period : resCustom2
+srcClose2 = request.security(syminfo.tickerid, res2, close)
+outRSI2   = request.security(syminfo.tickerid, res2, ta.rsi(close, rsiLen2))
+
+// =========================
+// ===== CM-style signals and backgrounds on primary RSI
+// =========================
+aboveLine = finalRsi > upLine
+belowLine = finalRsi < lowLine
+crossUp   = ta.crossover(finalRsi, lowLine)
+crossDn   = ta.crossunder(finalRsi, upLine)
+
+bgcolor(showBGHL and aboveLine ? color.new(color.red, 70) : na)
+bgcolor(showBGHL and belowLine ? color.new(color.green,70) : na)
+bgcolor(showCrossHL and crossUp ? color.new(color.lime, 60) : na)
+bgcolor(showCrossHL and crossDn ? color.new(color.red,  60) : na)
+
+// =========================
+// ===== Plotting
+// =========================
+// color logic
+col = switch colorMode
+    "None"   => color.new(color.white, 0)
+    "Trend"  => finalRsi >= 50 ? color.new(color.aqua, 0) : color.new(color.red, 0)
+    "Impulse"=> finalRsi > upLine ? color.new(color.aqua, 0) : finalRsi < lowLine ? color.new(color.red, 0) : color.new(color.gray, 0)
+
+plot(finalRsi, title="Primary RSI (ML)", color=col, linewidth=3)
+plot(showSecondRsi ? outRSI2 : na, title="2nd RSI", color=color.orange, linewidth=2, style=plot.style_linebr)
+
+p1 = plot(upLine,  title="Upper", color=color.red,  linewidth=2)
+p2 = plot(lowLine, title="Lower", color=color.lime, linewidth=2)
+plot(showMid ? 50 : na, title="Mid", color=color.gray, linewidth=1)
+fill(p1, p2, color=color.new(color.silver, 80))
+
+plotchar(showBSLabels and crossUp, title="Buy",  char='B', location=location.bottom, color=color.lime)
+plotchar(showBSLabels and crossDn, title="Sell", char='S', location=location.top,    color=color.red)
+
+// optional bar coloring of price chart for quick context
+barcolor(colorMode == "None" ? na : (finalRsi >= 50 ? color.new(color.aqua, 85) : color.new(color.red, 85)))
